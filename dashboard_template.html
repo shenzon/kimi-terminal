@@ -1,0 +1,318 @@
+<title>Kimi L1 — 4H Swing Terminal</title>
+<style>
+  :root{
+    --bg:#0e1319; --panel:#161d26; --panel-2:#1b2430; --raise:#202b38;
+    --line:#28323f; --line-soft:#1f2833;
+    --ink:#e8eef4; --ink-soft:#a3b3c2; --muted:#6f8091;
+    --gold:#d4a24e; --gold-soft:#e6bd6b;
+    --trade:#35c88a; --trade-dim:#173a2c;
+    --exit:#ef5a5f; --exit-dim:#3a1c1e;
+    --flat:#8493a3; --flat-dim:#232e3a;
+    --bear:#e0605f; --bull:#3ec78c;
+    --spark-price:#eaf1f8; --spark-trend:#d4a24e;
+    --shadow:0 1px 0 rgba(255,255,255,.03),0 18px 40px -24px rgba(0,0,0,.8);
+    --mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  :root[data-theme="light"]{
+    --bg:#eef1f5; --panel:#ffffff; --panel-2:#f4f6f9; --raise:#eef1f5;
+    --line:#dfe4ea; --line-soft:#e8ecf1;
+    --ink:#16202b; --ink-soft:#4a5866; --muted:#7c8b99;
+    --gold:#a9781f; --gold-soft:#c1912f;
+    --trade:#0f9d63; --trade-dim:#d6f0e4;
+    --exit:#d23b40; --exit-dim:#f7dcdd;
+    --flat:#63748a; --flat-dim:#e4e9ef;
+    --bear:#cf4a49; --bull:#0f9d63;
+    --spark-price:#1c2a38; --spark-trend:#a9781f;
+    --shadow:0 1px 0 rgba(255,255,255,.6),0 16px 34px -26px rgba(20,40,70,.35);
+  }
+  @media (prefers-color-scheme:light){
+    :root:not([data-theme="dark"]){
+      --bg:#eef1f5; --panel:#ffffff; --panel-2:#f4f6f9; --raise:#eef1f5;
+      --line:#dfe4ea; --line-soft:#e8ecf1;
+      --ink:#16202b; --ink-soft:#4a5866; --muted:#7c8b99;
+      --gold:#a9781f; --gold-soft:#c1912f;
+      --trade:#0f9d63; --trade-dim:#d6f0e4;
+      --exit:#d23b40; --exit-dim:#f7dcdd;
+      --flat:#63748a; --flat-dim:#e4e9ef;
+      --bear:#cf4a49; --bull:#0f9d63;
+      --spark-price:#1c2a38; --spark-trend:#a9781f;
+      --shadow:0 1px 0 rgba(255,255,255,.6),0 16px 34px -26px rgba(20,40,70,.35);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);
+    -webkit-font-smoothing:antialiased;line-height:1.5;
+    background-image:radial-gradient(1200px 600px at 80% -10%,rgba(212,162,78,.06),transparent 60%);}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+
+  /* ── header ── */
+  header{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-end;justify-content:space-between;
+    padding-bottom:20px;margin-bottom:26px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:14px}
+  .glyph{width:38px;height:38px;flex:none;border:1px solid var(--line);border-radius:9px;
+    background:linear-gradient(160deg,var(--panel-2),var(--panel));display:grid;place-items:center;
+    box-shadow:var(--shadow)}
+  .glyph svg{width:22px;height:22px}
+  .brand h1{margin:0;font-family:var(--sans);font-weight:800;font-size:1.28rem;letter-spacing:-.01em;
+    line-height:1;color:var(--ink)}
+  .brand .tag{margin-top:5px;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .clock{text-align:right;display:flex;flex-direction:column;gap:3px}
+  .clock .z{font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--gold-soft);font-weight:600}
+  .clock .t{font-size:1.42rem;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1}
+  .clock .d{font-size:.72rem;color:var(--muted)}
+  .themebtn{margin-top:8px;align-self:flex-end;background:var(--panel-2);color:var(--ink-soft);
+    border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-family:var(--mono);font-size:.7rem;
+    letter-spacing:.06em;cursor:pointer}
+  .themebtn:hover{color:var(--ink);border-color:var(--gold)}
+  .themebtn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+
+  /* ── grid of instrument panels ── */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--line);
+    border-radius:14px;padding:0;overflow:hidden;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;opacity:0;transform:translateY(10px);
+    animation:rise .5s cubic-bezier(.2,.7,.2,1) forwards}
+  .card:nth-child(2){animation-delay:.08s}
+  .card:nth-child(3){animation-delay:.16s}
+  @keyframes rise{to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.card{animation:none;opacity:1;transform:none}}
+
+  .chead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+    padding:16px 18px 14px}
+  .sym{font-family:var(--sans);font-weight:800;font-size:1.5rem;letter-spacing:-.02em;line-height:.95;color:var(--ink)}
+  .full{margin-top:4px;font-size:.68rem;letter-spacing:.06em;color:var(--muted)}
+  .badge{font-size:.6rem;letter-spacing:.13em;text-transform:uppercase;font-weight:700;
+    padding:3px 7px;border-radius:5px;border:1px solid var(--line);color:var(--ink-soft);white-space:nowrap}
+  .badge.trad{color:var(--gold-soft);border-color:color-mix(in srgb,var(--gold) 45%,var(--line))}
+
+  /* action verdict */
+  .verdict{margin:2px 18px 0;padding:13px 15px;border-radius:11px;border:1px solid var(--line);
+    display:flex;align-items:center;gap:13px;background:var(--panel-2)}
+  .verdict .dot{width:11px;height:11px;border-radius:50%;flex:none;box-shadow:0 0 0 4px var(--halo)}
+  .verdict .lead{font-family:var(--sans);font-weight:800;font-size:1.16rem;letter-spacing:.01em;line-height:1}
+  .verdict .sub{font-size:.72rem;color:var(--ink-soft);margin-top:4px;letter-spacing:.01em}
+  .v-trade{--halo:var(--trade-dim);border-color:color-mix(in srgb,var(--trade) 40%,var(--line));
+    background:color-mix(in srgb,var(--trade) 8%,var(--panel-2))}
+  .v-trade .dot{background:var(--trade)} .v-trade .lead{color:var(--trade)}
+  .v-exit{--halo:var(--exit-dim);border-color:color-mix(in srgb,var(--exit) 40%,var(--line));
+    background:color-mix(in srgb,var(--exit) 8%,var(--panel-2))}
+  .v-exit .dot{background:var(--exit)} .v-exit .lead{color:var(--exit)}
+  .v-flat{--halo:var(--flat-dim)}
+  .v-flat .dot{background:var(--flat)} .v-flat .lead{color:var(--ink-soft)}
+
+  /* bias meter */
+  .bias{padding:15px 18px 6px}
+  .bias-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+  .bias-lbl{font-size:.63rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .bias-val{font-size:.8rem;color:var(--ink-soft)}
+  .bias-val b{color:var(--ink);font-size:.95rem}
+  .track{position:relative;height:8px;border-radius:5px;overflow:hidden;
+    background:linear-gradient(90deg,
+      color-mix(in srgb,var(--bear) 55%,transparent),
+      color-mix(in srgb,var(--muted) 30%,transparent) 50%,
+      color-mix(in srgb,var(--bull) 55%,transparent))}
+  .knob{position:absolute;top:50%;width:3px;height:16px;border-radius:2px;background:var(--ink);
+    transform:translate(-50%,-50%);box-shadow:0 0 0 2px var(--panel)}
+  .zones{display:flex;justify-content:space-between;margin-top:5px;font-size:.58rem;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+
+  /* stat strip */
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line-soft);
+    margin:14px 0 0;border-top:1px solid var(--line-soft)}
+  .stat{background:var(--panel);padding:10px 18px}
+  .stat .k{font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .stat .v{font-size:1.02rem;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;margin-top:2px}
+  .stat .v small{font-size:.7rem;color:var(--ink-soft);font-weight:500}
+  .up{color:var(--bull)!important} .down{color:var(--bear)!important}
+
+  /* sparkline */
+  .plot{position:relative;padding:14px 14px 6px}
+  .plot-head{display:flex;justify-content:space-between;align-items:center;padding:0 4px 4px}
+  .plot-title{font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .legend{display:flex;gap:12px;font-size:.62rem}
+  .legend span{display:inline-flex;align-items:center;gap:5px;color:var(--ink-soft)}
+  .legend i{width:14px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}
+  .spark{width:100%;height:96px;display:block;touch-action:none}
+  .tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-8px);
+    background:var(--raise);border:1px solid var(--line);border-radius:8px;padding:7px 9px;
+    font-size:.66rem;line-height:1.45;white-space:nowrap;box-shadow:var(--shadow);z-index:5;transition:opacity .1s}
+  .tip b{color:var(--ink)} .tip .pc{color:var(--spark-price)} .tip .tc{color:var(--gold-soft)}
+
+  /* levels strip (trade/exit) */
+  .levels{display:flex;gap:0;border-top:1px solid var(--line-soft);background:var(--panel)}
+  .lv{flex:1;padding:9px 14px;text-align:center;border-right:1px solid var(--line-soft)}
+  .lv:last-child{border-right:0}
+  .lv .k{font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .lv .v{font-size:.9rem;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;margin-top:2px}
+  .lv.stopv .v{color:var(--exit)} .lv.tgtv .v{color:var(--trade)}
+
+  footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);
+    display:flex;flex-wrap:wrap;gap:8px 20px;justify-content:space-between;
+    font-size:.7rem;color:var(--muted)}
+  footer b{color:var(--ink-soft);font-weight:600}
+  .disclaim{max-width:640px}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 16 L7 9 L11 13 L16 5 L22 12"/>
+          <circle cx="16" cy="5" r="1.4" fill="var(--gold)" stroke="none"/>
+        </svg>
+      </div>
+      <div>
+        <h1>KIMI&nbsp;L1</h1>
+        <div class="tag">4H swing terminal · low-lag trend filter</div>
+      </div>
+    </div>
+    <div class="clock">
+      <div class="z">Malaysia / Singapore · UTC+8</div>
+      <div class="t" id="clock">--:--:--</div>
+      <div class="d" id="genstamp"></div>
+      <button class="themebtn" id="themebtn" type="button">◐ theme</button>
+    </div>
+  </header>
+
+  <main class="grid" id="grid"></main>
+
+  <footer>
+    <div class="disclaim">
+      <b>Long-only edge validated on gold &amp; silver</b> (short side loses); EUR/USD is context-only.
+      Sizing = vol-target (median ÷ current realized vol). Data ~15&nbsp;min delayed. Not financial advice.
+    </div>
+    <div>Last 4H bar · <b id="barstamp"></b></div>
+  </footer>
+</div>
+
+<script id="kimi-data" type="application/json">__KIMI_DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('kimi-data').textContent);
+const VMAP = {"TRADE":"v-trade","EXIT":"v-exit","NO TRADE":"v-flat"};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function fmt(x, d){ return Number(x).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
+
+function sparkSVG(inst, id){
+  const s = inst.spark, W=100, H=100;              // viewBox units, scales via CSS
+  const ps = s.map(o=>o.p), ts = s.map(o=>o.tr);
+  const lo = Math.min(...ps, ...ts), hi = Math.max(...ps, ...ts);
+  const pad = (hi-lo)*0.12 || 1, min=lo-pad, max=hi+pad;
+  const x = i => i/(s.length-1)*W;
+  const y = v => H - (v-min)/(max-min)*H;
+  const path = arr => arr.map((v,i)=>(i?'L':'M')+x(i).toFixed(2)+' '+y(v).toFixed(2)).join(' ');
+  const ex = x(s.length-1).toFixed(2), ey = y(ps[ps.length-1]).toFixed(2);
+  return `
+   <svg class="spark" id="${id}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+        aria-label="${inst.sym} price versus L1 trend, last ${s.length} 4-hour bars">
+     <path d="${path(ts)}" fill="none" stroke="var(--spark-trend)" stroke-width="1.1"
+           stroke-dasharray="2.4 2.4" vector-effect="non-scaling-stroke" opacity=".9"/>
+     <path d="${path(ps)}" fill="none" stroke="var(--spark-price)" stroke-width="1.6"
+           vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+     <circle cx="${ex}" cy="${ey}" r="2.1" fill="var(--spark-price)" vector-effect="non-scaling-stroke"/>
+     <line class="cross" x1="0" y1="0" x2="0" y2="${H}" stroke="var(--muted)" stroke-width="1"
+           vector-effect="non-scaling-stroke" opacity="0"/>
+   </svg>`;
+}
+
+function card(inst){
+  const d = inst.decimals;
+  const distCls = inst.dist>0?'up':inst.dist<0?'down':'';
+  const slopeCls = inst.slope_sign==='UP'?'up':inst.slope_sign==='DOWN'?'down':'';
+  const vt = inst.tradeable ? `${fmt(inst.vt_size,2)}× <small>${inst.vt_ctx.split('—').pop().trim()}</small>` : '—';
+  const knob = Math.max(2,Math.min(98,inst.bias));
+  let levels='';
+  if(inst.levels){
+    const L=inst.levels;
+    levels = `<div class="levels">
+      <div class="lv"><div class="k">Entry</div><div class="v">${fmt(L.entry,d)}</div></div>
+      <div class="lv stopv"><div class="k">Stop</div><div class="v">${fmt(L.stop,d)}</div></div>
+      <div class="lv tgtv"><div class="k">Target</div><div class="v">${fmt(L.target,d)}</div></div>
+      ${L.r!==undefined?`<div class="lv"><div class="k">Open R</div><div class="v">${L.r>0?'+':''}${L.r}R</div></div>`:''}
+    </div>`;
+  }
+  const sid = 'sp-'+inst.key;
+  return `<article class="card">
+    <div class="chead">
+      <div><div class="sym">${inst.sym}</div><div class="full">${inst.label}</div></div>
+      <div class="badge ${inst.tradeable?'trad':''}">${inst.tradeable?'Tradeable':'Context only'}</div>
+    </div>
+    <div class="verdict ${VMAP[inst.action]}">
+      <span class="dot"></span>
+      <div><div class="lead">${inst.action}</div><div class="sub">${inst.sub}</div></div>
+    </div>
+    <div class="bias">
+      <div class="bias-top">
+        <span class="bias-lbl">Bias</span>
+        <span class="bias-val"><b>${inst.bias}</b>/100 · ${inst.direction}</span>
+      </div>
+      <div class="track"><span class="knob" style="left:${knob}%"></span></div>
+      <div class="zones"><span>Bear</span><span>Neutral</span><span>Bull</span></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="k">Price</div><div class="v">${fmt(inst.price,d)}</div></div>
+      <div class="stat"><div class="k">L1 Trend</div><div class="v">${fmt(inst.trend,d)}</div></div>
+      <div class="stat"><div class="k">vs Trend</div><div class="v ${distCls}">${inst.dist>0?'+':''}${inst.dist}%</div></div>
+      <div class="stat"><div class="k">Vol-target size</div><div class="v">${vt}</div></div>
+    </div>
+    <div class="plot">
+      <div class="plot-head">
+        <span class="plot-title">Price × L1 trend · last ${inst.spark.length} bars (4H)</span>
+        <span class="legend">
+          <span><i style="border-color:var(--spark-price)"></i>Price</span>
+          <span><i style="border-color:var(--spark-trend);border-top-style:dashed"></i>Trend</span>
+        </span>
+      </div>
+      ${sparkSVG(inst,sid)}
+      <div class="tip" id="tip-${inst.key}"></div>
+    </div>
+    ${levels}
+  </article>`;
+}
+
+document.getElementById('grid').innerHTML = DATA.instruments.map(card).join('');
+document.getElementById('genstamp').textContent = 'snapshot ' + DATA.generated_myt;
+document.getElementById('barstamp').textContent = DATA.instruments[0].bar_myt + ' MYT';
+
+// ── sparkline hover crosshair + tooltip ──
+DATA.instruments.forEach(inst=>{
+  const svg=document.getElementById('sp-'+inst.key);
+  const tip=document.getElementById('tip-'+inst.key);
+  const cross=svg.querySelector('.cross');
+  const s=inst.spark, d=inst.decimals;
+  function move(ev){
+    const r=svg.getBoundingClientRect();
+    const px=(ev.touches?ev.touches[0].clientX:ev.clientX)-r.left;
+    let i=Math.round(px/r.width*(s.length-1)); i=Math.max(0,Math.min(s.length-1,i));
+    cross.setAttribute('x1',i/(s.length-1)*100); cross.setAttribute('x2',i/(s.length-1)*100);
+    cross.setAttribute('opacity','.5');
+    const o=s[i], dv=((o.p-o.tr)/o.p*100);
+    tip.innerHTML=`<b>${o.t}</b> MYT<br><span class="pc">price</span> ${fmt(o.p,d)} · <span class="tc">trend</span> ${fmt(o.tr,d)}<br>${dv>0?'+':''}${dv.toFixed(2)}% vs trend`;
+    tip.style.left=Math.max(60,Math.min(r.width-60,px))+'px';
+    tip.style.top=(svg.offsetTop-6)+'px';
+    tip.style.opacity='1';
+  }
+  function out(){cross.setAttribute('opacity','0');tip.style.opacity='0';}
+  svg.addEventListener('mousemove',move); svg.addEventListener('mouseleave',out);
+  svg.addEventListener('touchstart',move,{passive:true}); svg.addEventListener('touchmove',move,{passive:true});
+  svg.addEventListener('touchend',out);
+});
+
+// ── MYT live clock (UTC+8) ──
+function tick(){
+  const now=new Date(Date.now()+ (new Date().getTimezoneOffset()*60000) + 8*3600000);
+  const p=n=>String(n).padStart(2,'0');
+  document.getElementById('clock').textContent=`${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+}
+tick(); setInterval(tick,1000);
+
+// ── theme toggle ──
+document.getElementById('themebtn').addEventListener('click',()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const dark=cur? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', dark?'light':'dark');
+});
+</script>

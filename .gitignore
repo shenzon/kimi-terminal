@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+_site/
+.venv/
+.swing4h_pos.json
+index.html
