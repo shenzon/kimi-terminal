@@ -151,7 +151,8 @@
     display:flex;flex-wrap:wrap;gap:8px 20px;justify-content:space-between;
     font-size:.7rem;color:var(--muted)}
   footer b{color:var(--ink-soft);font-weight:600}
-  .disclaim{max-width:640px}
+  .disclaim{max-width:600px}
+  .stamps{display:flex;flex-direction:column;gap:4px;text-align:right}
 </style>
 
 <div class="wrap">
@@ -184,7 +185,10 @@
       <b>Long-only edge validated on gold &amp; silver</b> (short side loses); EUR/USD is context-only.
       Sizing = vol-target (median ÷ current realized vol). Data ~15&nbsp;min delayed. Not financial advice.
     </div>
-    <div>Last 4H bar · <b id="barstamp"></b></div>
+    <div class="stamps">
+      <div>Last 4H bar · <b id="barstamp"></b></div>
+      <div>Next rebuild · <b id="nextbuild">—</b> MYT</div>
+    </div>
   </footer>
 </div>
 
@@ -307,7 +311,22 @@ function tick(){
   const p=n=>String(n).padStart(2,'0');
   document.getElementById('clock').textContent=`${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
 }
-tick(); setInterval(tick,1000);
+// ── next scheduled rebuild (00/04/08/12/16/20 UTC + 5 min) → MYT ──
+function nextRebuild(){
+  const now=new Date(), slots=[0,4,8,12,16,20];
+  let best=null;
+  for(let add=0;add<=1 && !best;add++){
+    for(const h of slots){
+      const c=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()+add,h,5,0));
+      if(c>now){best=c;break;}
+    }
+  }
+  const myt=new Date(best.getTime()+8*3600000), p=n=>String(n).padStart(2,'0');
+  const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  return `${days[myt.getUTCDay()]} ${p(myt.getUTCHours())}:${p(myt.getUTCMinutes())}`;
+}
+function tickAll(){ tick(); document.getElementById('nextbuild').textContent=nextRebuild(); }
+tickAll(); setInterval(tickAll,1000);
 
 // ── theme toggle ──
 document.getElementById('themebtn').addEventListener('click',()=>{
