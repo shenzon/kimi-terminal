@@ -53,7 +53,16 @@ def series_state(key):
         else:
             action, sub, lvl = "NO TRADE", "stay flat — trend not up", None
     else:
-        action, sub, lvl = "NO TRADE", "context only — no edge", None
+        # Context-only: the L1 filter still reads a trend, but no backtested
+        # edge — so spell that out when the read is directional, or a strong
+        # BULL/BEAR on a context card looks like a bug rather than a policy.
+        if k.direction == "BULL":
+            sub = "trend up, but no backtested edge"
+        elif k.direction == "BEAR":
+            sub = "trend down, but no backtested edge"
+        else:
+            sub = "context only — no edge"
+        action, lvl = "NO TRADE", None
 
     N = 90
     idx = df.index[-N:]
