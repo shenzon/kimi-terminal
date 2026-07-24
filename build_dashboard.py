@@ -28,37 +28,51 @@ def series_state(key):
     m = S.INSTRUMENTS[key]
     df = fetch_with_retry(m["ticker"])
     close = df["Close"]
-    lam = S.auto_lambda(close)
-    k = S.KimiL1(lam=lam, mintick=m.get("mintick", 0.0001))
+    mintick = m.get("mintick", 0.0001)
+
+    # DUAL LENS (matches live swing4h): SLOW = trend regime (bias/label/trend/
+    # exit), FAST = early turns (entry timing). Run slow manually to keep the
+    # trend sparkline; fast only needs its final slope.
+    slow = S.KimiL1(lam=S.auto_lambda(close, S.SLOW_SWING_N), mintick=mintick)
     trend_hist = []
     for px in close.to_numpy(dtype=float):
-        k.update(px)
-        trend_hist.append(k.trend)
+        slow.update(px)
+        trend_hist.append(slow.trend)
+    fast = S.run_lens(close, S.FAST_SWING_N, mintick)
+
     last = float(close.iloc[-1])
     a = S.atr(df)
-    dist = k.trend_dist_pct(last)
+    dist = slow.trend_dist_pct(last)
     tradeable = key in S.TRADEABLE
     vt_size, vt_ctx = S.vol_target_size(close) if tradeable else (1.0, "")
-    long_side = k.slope > 0
-    stop = last - 1.5 * a if long_side else last + 1.5 * a
-    tgt = last + 3.0 * a if long_side else last - 3.0 * a
+    stop = last - 1.5 * a          # long-only: stop below / target above
+    tgt = last + 3.0 * a
 
-    # Stateless verdict for a hosted snapshot: reflect the current bar only
-    # (no frozen-position store in CI — the page shows what to do now).
+    # Asymmetric entry gate (stateless snapshot — no frozen-position store in
+    # CI, so the page shows the ENTRY decision "what to do now").
+    trend_ok = slow.direction != "BEAR"
+    vol_ok, vol_ctx = (S.volume_confirms(df["Volume"]) if tradeable
+                       else (True, ""))
+    want_long = fast.slope > 0 and trend_ok and vol_ok
+
     if tradeable:
-        if k.slope > 0:
-            action, sub = "TRADE", "go long — trend is up"
-            e, s, t = last, stop, tgt
-            lvl = {"entry": e, "stop": s, "target": t}
+        if want_long:
+            action = "TRADE"
+            sub = "go long — fast turned up inside a non-bearish trend"
+            lvl = {"entry": last, "stop": stop, "target": tgt}
         else:
-            action, sub, lvl = "NO TRADE", "stay flat — trend not up", None
+            action, lvl = "NO TRADE", None
+            if not trend_ok:
+                sub = "slow trend is down — stay flat"
+            elif fast.slope <= 0:
+                sub = "waiting for fast lens to turn up"
+            else:
+                sub = f"fast up but volume light ({vol_ctx}) — wait"
     else:
-        # Context-only: the L1 filter still reads a trend, but no backtested
-        # edge — so spell that out when the read is directional, or a strong
-        # BULL/BEAR on a context card looks like a bug rather than a policy.
-        if k.direction == "BULL":
+        # Context-only: L1 still reads a trend, but no backtested edge.
+        if slow.direction == "BULL":
             sub = "trend up, but no backtested edge"
-        elif k.direction == "BEAR":
+        elif slow.direction == "BEAR":
             sub = "trend down, but no backtested edge"
         else:
             sub = "context only — no edge"
@@ -73,17 +87,17 @@ def series_state(key):
              for ts, p, tr in zip(idx, px_h, tr_h)]
     return {
         "key": key, "label": m["label"], "sym": m["label"].split()[0],
-        "tradeable": tradeable, "bias": k.bias_score, "direction": k.direction,
-        "slope": round(k.slope, 6),
-        "slope_sign": "UP" if k.slope > 0 else "DOWN" if k.slope < 0 else "FLAT",
-        "trend": round(k.trend, 5), "price": round(last, 5), "dist": round(dist, 2),
+        "tradeable": tradeable, "bias": slow.bias_score, "direction": slow.direction,
+        "slope": round(slow.slope, 6),
+        "slope_sign": "UP" if slow.slope > 0 else "DOWN" if slow.slope < 0 else "FLAT",
+        "trend": round(slow.trend, 5), "price": round(last, 5), "dist": round(dist, 2),
         "vt_size": round(vt_size, 2), "vt_ctx": vt_ctx,
         "decimals": int(m["px"].strip(".f")),
         "action": action, "sub": sub, "levels": lvl,
         # index labels are bin LEFT edges (bar open) — show the CLOSE, or the
         # page reads a full 4H stale now that the forming bar is dropped
         "bar_myt": (df.index[-1] + S.BAR + MYT).strftime("%a %d %b %Y · %H:%M"),
-        "bars": len(df), "lam": round(lam, 4), "spark": spark,
+        "bars": len(df), "lam": round(slow.lam, 4), "spark": spark,
     }
 
 

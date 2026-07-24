@@ -86,16 +86,27 @@ BEAR_SCORE     = 35     # score <= -> BEAR
 DUAL_PCT_ALERT = 50.0   # dual >= this % of lambda -> "building"
 FIRED_SHOW     = 2      # keep FIRED visible for N bars
 AUTOLAM_LEN    = 100    # median lookback for auto-lambda
-# N x median bar move. The Pine ballparks are DAILY; on 4H bars a daily-tuned
-# N (12) is too sluggish and lags reversals by ~6 bars. N=4 makes the slope
-# track 4H momentum so the read matches the chart instead of holding a stale
-# trend through a fresh selloff. (See systematic-debugging session 2026-07-23.)
-AUTOLAM_SWING_N = 4.0   # swing-style multiplier, 4H-corrected
+# DUAL-LENS λ (2026-07-24). One slope can't both turn fast AND stay stable
+# through pullbacks, so we run TWO on the same 4H bars:
+#   FAST (small λ, N=4)  — early turns; drives FIRED/BUILDING + entry timing.
+#   SLOW (large λ, N=12) — trend regime; drives the BULL/FLAT/BEAR label + exit.
+# N is the swing multiplier on median(|Δ4H|). Small N = low threshold = fires on
+# small moves (fast). Large N = daily-tuned, matches the on-chart "Kimi Smart
+# Money Engine v1.4.3 [Daily Forex]" the user actually trades. See design doc
+# docs/superpowers/specs/2026-07-24-swing4h-dual-lens-design.md.
+FAST_SWING_N = 4.0
+SLOW_SWING_N = 12.0
 PEAK_EXPAND    = 1.05
 # Vol-target sizing (kimi_qte.py, 2026-07-23): robust Sharpe lift ~0.97->1.25,
 # MaxDD ~-21%->-13% on gold Rule D. size = median_vol / realized_vol(W), capped.
 VOL_W          = 30     # realized-vol window (~5 trading days on 4H)
 VOL_CAP        = 3.0    # max size multiplier
+# Volume-confirmation gate on the fast-lens ENTRY (gold/silver only; FX has no
+# Yahoo volume). Entry bar must trade >= median volume of the recent window, so
+# a thin low-participation up-bar can't trip an entry. Fails OPEN on missing
+# data. See docs/superpowers/specs/2026-07-24-swing4h-volume-gate-design.md.
+VOL_CONFIRM_LOOKBACK = 20   # bars for the median-volume baseline (~3.3 days)
+VOL_CONFIRM_MULT     = 1.0  # entry vol must be >= MULT x median
 
 
 def soft(x, thresh):
@@ -260,8 +271,12 @@ def fetch_4h(ticker, closed_only=True, with_forming=False):
     h = df["High"].resample("4h").max()
     l = df["Low"].resample("4h").min()
     c = df["Close"].resample("4h").last()
-    out = pd.DataFrame({"Open": o, "High": h, "Low": l,
-                        "Close": c}).dropna(subset=["Close"])
+    # Volume: sum the constituent 1H bars. Present for futures (gold/silver),
+    # all-zero for Yahoo FX — the volume gate fails open on that.
+    v = (df["Volume"].resample("4h").sum() if "Volume" in df.columns
+         else pd.Series(0.0, index=c.index))
+    out = pd.DataFrame({"Open": o, "High": h, "Low": l, "Close": c,
+                        "Volume": v}).dropna(subset=["Close"])
     forming = None
     if closed_only and len(out):
         now = pd.Timestamp.now(tz=out.index.tz)
@@ -278,11 +293,20 @@ def atr(df, n=14):
     return tr.ewm(alpha=1 / n, adjust=False).mean().iloc[-1]
 
 
-def auto_lambda(close: pd.Series) -> float:
-    """N x median(|dsrc|) swing anchor over the last AUTOLAM_LEN bars."""
+def auto_lambda(close: pd.Series, n: float) -> float:
+    """n x median(|dsrc|) swing anchor over the last AUTOLAM_LEN bars.
+    n = FAST_SWING_N (twitchy) or SLOW_SWING_N (trend-stable)."""
     move = close.diff().abs().tail(AUTOLAM_LEN)
     med = float(np.nanmedian(move))
-    return med * AUTOLAM_SWING_N
+    return med * n
+
+
+def run_lens(close: pd.Series, n: float, mintick: float) -> KimiL1:
+    """Run a full KimiL1 pass over `close` at swing multiplier `n`."""
+    k = KimiL1(lam=auto_lambda(close, n), mintick=mintick)
+    for px in close.to_numpy(dtype=float):
+        k.update(px)
+    return k
 
 
 def vol_target_size(close: pd.Series, w=VOL_W, cap=VOL_CAP):
@@ -301,6 +325,25 @@ def vol_target_size(close: pd.Series, w=VOL_W, cap=VOL_CAP):
     tag = "calm" if size > 1.05 else "turbulent" if size < 0.95 else "normal vol"
     where = "below" if pct < 0 else "above"
     return size, f"realized vol {abs(pct):.0f}% {where} median — {tag}"
+
+
+def volume_confirms(vol: pd.Series):
+    """Fast-lens ENTRY volume gate. True when the latest closed bar traded
+    >= VOL_CONFIRM_MULT x median volume over the recent window. Fails OPEN
+    (returns True) when volume is 0/NaN or no positive history exists — never
+    block an entry on missing data. Returns (ok, context_str)."""
+    if vol is None or len(vol) == 0:
+        return True, "no volume data — gate skipped"
+    last = float(vol.iloc[-1])
+    hist = vol.tail(VOL_CONFIRM_LOOKBACK)
+    pos = hist[hist > 0]
+    if not np.isfinite(last) or last <= 0 or pos.empty:
+        return True, "no volume data — gate skipped"
+    med = float(np.median(pos.to_numpy()))
+    ratio = last / med if med > 0 else 0.0
+    ok = last >= VOL_CONFIRM_MULT * med
+    tag = "✓" if ok else "— light"
+    return ok, f"vol {ratio:.1f}× median {tag}"
 
 
 def signal_line(k: KimiL1):
@@ -384,23 +427,33 @@ def analyze(key):
     m = INSTRUMENTS[key]
     df, forming = fetch_4h(m["ticker"], with_forming=True)
     close = df["Close"]
-    lam = auto_lambda(close)
+    mintick = m.get("mintick", 0.0001)
 
-    k = KimiL1(lam=lam, mintick=m.get("mintick", 0.0001))
-    for px in close.to_numpy(dtype=float):
-        k.update(px)
+    # DUAL LENS on the same 4H bars: slow = trend regime (label + exit),
+    # fast = early turns (fired/building signal + entry timing).
+    slow = run_lens(close, SLOW_SWING_N, mintick)
+    fast = run_lens(close, FAST_SWING_N, mintick)
 
     last = float(close.iloc[-1])
     a = atr(df)
     pxf, slp = m["px"], m["slp"]
-    dist = k.trend_dist_pct(last)
+    dist = slow.trend_dist_pct(last)
     vt_size, vt_ctx = vol_target_size(close) if key in TRADEABLE else (1.0, "")
-    dtxt, dcol = _DIR[k.direction]
+    dtxt, dcol = _DIR[slow.direction]
 
-    # ATR stop/target aligned to the slope-sign bias (1.5 / 3.0 ATR ~ 1:2R)
-    long_side = k.slope > 0
-    stop = last - 1.5 * a if long_side else last + 1.5 * a
-    tgt = last + 3.0 * a if long_side else last - 3.0 * a
+    # Asymmetric long-only rule: ENTER when fast turns up within a non-bearish
+    # slow regime; HOLD while slow trend holds; EXIT only when slow goes BEAR.
+    # Gate on slow.direction (the displayed label) not raw slope sign, so a
+    # slope grazing zero (still labelled FLAT) doesn't chatter us in/out.
+    trend_ok = slow.direction != "BEAR"              # hold gate: BULL/FLAT/WARMING
+    # Volume-confirmation gate on ENTRY only (gold/silver; FX fails open).
+    vol_ok, vol_ctx = (volume_confirms(df["Volume"]) if key in TRADEABLE
+                       else (True, ""))
+    want_long = fast.slope > 0 and trend_ok and vol_ok   # early-entry trigger
+
+    # ATR stop/target for the long side (1.5 / 3.0 ATR ~ 1:2R). Long-only here.
+    stop = last - 1.5 * a
+    tgt = last + 3.0 * a
 
     # ── card: left accent spine + dim labels / bright values ──
     acc = _ACCENT.get(key, _CYAN)
@@ -412,26 +465,31 @@ def analyze(key):
         print(f"{sp}  {_c(lbl.ljust(9), _DIM)} {val}")
 
     b_open, b_close = df.index[-1], df.index[-1] + BAR
-    scol = _GRN if k.slope > 0 else _RED if k.slope < 0 else _AMB
+    scol = _GRN if slow.slope > 0 else _RED if slow.slope < 0 else _AMB
+    fcol = _GRN if fast.slope > 0 else _RED if fast.slope < 0 else _AMB
     distc = _GRN if dist >= 0 else _RED
-    dd = "▲" if k.dual > 0 else "▼" if k.dual < 0 else "—"
+    dd = "▲" if fast.dual > 0 else "▼" if fast.dual < 0 else "—"
 
     print()
     print(f"{sp} {_c('📐 KIMI L1', _DIM)}  {_c(sym, _B, acc)}"
           f"{('  ' + _c(desc, _DIM)) if desc else ''}   {_c('[ ' + dtxt + ' ]', _B, dcol)}")
-    print(f"{sp} {_c(f'{b_open:%Y-%m-%d %H:%M}→{b_close:%H:%M} UTC · {len(df)} bars · λ {lam:{slp}}', _DIM)}")
+    print(f"{sp} {_c(f'{b_open:%Y-%m-%d %H:%M}→{b_close:%H:%M} UTC · {len(df)} bars · λ slow {slow.lam:{slp}} / fast {fast.lam:{slp}}', _DIM)}")
     if forming is not None:
         f_last = float(forming["Close"])
         print(f"{sp} {_c(f'forming {forming.name:%H:%M}→{forming.name + BAR:%H:%M} · last {f_last:{pxf}} (excl)', _DIM)}")
     print(sp)
-    row("bias", f"{_meter(k.bias_score)}  {_c(f'{k.bias_score}/100', _B)}  {_c(dtxt, dcol)}")
-    row("slope", f"{_c(f'{k.slope:+{slp}}', _B, scol)} {_c('/bar', _DIM)}")
-    row("trend", f"{k.trend:{pxf}}   {_c('price', _DIM)} {_c(f'{last:{pxf}}', _B)}  "
+    row("bias", f"{_meter(slow.bias_score)}  {_c(f'{slow.bias_score}/100', _B)}  {_c(dtxt, dcol)}")
+    row("slope", f"{_c(f'{slow.slope:+{slp}}', _B, scol)} {_c('/bar trend', _DIM)}   "
+                 f"{_c('fast', _DIM)} {_c(f'{fast.slope:+{slp}}', fcol)}")
+    row("trend", f"{slow.trend:{pxf}}   {_c('price', _DIM)} {_c(f'{last:{pxf}}', _B)}  "
                  f"{_c(f'{dist:+.2f}%', distc)}")
-    row("norm ±", f"{k.safe_amp:{slp}} {_c(f'/bar · {k.bp_count} breakpoints', _DIM)}")
-    row("dual", _c(f"{dd} {k.dual_pct:.1f}% of λ", _DIM))
+    row("norm ±", f"{slow.safe_amp:{slp}} {_c(f'/bar · {slow.bp_count} breakpoints', _DIM)}")
+    row("signal", _c(signal_line(fast), _DIM))
+    row("dual", _c(f"{dd} {fast.dual_pct:.1f}% of λ (fast)", _DIM))
     if key in TRADEABLE:
         row("size", f"{_c(f'{vt_size:.2f}×', _B)}  {_c(vt_ctx, _DIM)}")
+        vcol = _GRN if vol_ok else _AMB
+        row("vol", _c(vol_ctx, vcol))
     print(sp)
 
     def action(dot, dotcol, head, headcol):
@@ -445,20 +503,26 @@ def analyze(key):
     if key in TRADEABLE:
         pos = load_positions()
         held = pos.get(key)
-        if k.slope > 0:
-            if held is None:
-                # NEW entry — FREEZE entry/stop/tp/size here and remember them
-                held = {"entry": last, "stop": stop, "tp": tgt, "size": round(vt_size, 2),
-                        "entry_bar": f"{df.index[-1]:%Y-%m-%d %H:%M} UTC"}
+        # HOLD/EXIT is governed by the SLOW lens (trend_ok); ENTRY needs the
+        # FAST lens to turn up inside that non-bearish regime (want_long).
+        if held is not None and trend_ok:
+            # still in the trend — HOLD (fast pullbacks don't kick us out).
+            # REBALANCE size to the current vol-target each refresh (backtested
+            # F+size rebal): entry/stop/tp stay frozen — only the size multiplier
+            # tracks live volatility, sizing down as turbulence builds mid-trade.
+            entry_sz = held.get("entry_size", held.get("size", 1.0))
+            cur_sz = round(vt_size, 2)
+            if held.get("size") != cur_sz:      # persist the rebalanced size
+                held["size"] = cur_sz
                 pos[key] = held
                 save_positions(pos)
-                event = "entry"
-                notify(f"🟢 {sym} — TRADE: go long",
-                       f"size {vt_size:.2f}×  entry {last:{pxf}}  SL {stop:{pxf}}  TP {tgt:{pxf}}")
-                action("●", _GRN, f"TRADE — GO LONG now  (size {vt_size:.2f}×)", _GRN)
-            else:
-                sz = held.get("size", 1.0)   # back-compat: positions saved before sizing
-                action("●", _GRN, f"TRADE — HOLD your long  (size {sz:.2f}×)", _GRN)
+            action("●", _GRN,
+                   f"TRADE — HOLD your long  (size {cur_sz:.2f}× · entry {entry_sz:.2f}×)", _GRN)
+            note("holding through the pullback — slow trend still up (fast may dip)"
+                 if fast.slope <= 0 else "slow trend up, fast confirms")
+            if abs(cur_sz - entry_sz) >= 0.05:
+                verb = "down" if cur_sz < entry_sz else "up"
+                note(f"size rebalanced {verb} to {cur_sz:.2f}× ({vt_ctx})")
             e, s, t = held["entry"], held["stop"], held["tp"]
             r_now = (last - e) / (e - s) if e != s else 0.0
             prog = (last - e) / (t - e) * 100 if t != e else 0.0
@@ -466,31 +530,50 @@ def analyze(key):
             note(f"entry {e:{pxf}}  ·  stop {s:{pxf}}  ·  target {t:{pxf}}")
             print(f"{sp}    {_c('now', _DIM)} {_c(f'{last:{pxf}}', _B)} → "
                   f"{_c(f'{r_now:+.2f}R', _B, rc)} {_c(f'({prog:+.0f}% to target)', _DIM)}")
+        elif held is not None and not trend_ok:
+            # slow trend rolled over — EXIT (single clean exit)
+            e, s, t = held["entry"], held["stop"], held["tp"]
+            res = ("target hit ✅" if last >= t else "stop hit ⛔" if last <= s
+                   else f"{((last-e)/(e-s) if e!=s else 0):+.2f}R")
+            pos.pop(key, None)
+            save_positions(pos)
+            event = "exit"
+            notify(f"⚪ {sym} — EXIT: close long", f"{res}   entry {e:{pxf}} → now {last:{pxf}}")
+            action("●", _RED, f"EXIT — CLOSE your long now  ({res})", _RED)
+            note("slow trend rolled over — this is an exit, NOT a sell/short")
+        elif want_long:
+            # flat + fast turns up inside a non-bearish slow regime — ENTER
+            held = {"entry": last, "stop": stop, "tp": tgt, "size": round(vt_size, 2),
+                    "entry_size": round(vt_size, 2),   # frozen ref; size rebalances
+                    "entry_bar": f"{df.index[-1]:%Y-%m-%d %H:%M} UTC"}
+            pos[key] = held
+            save_positions(pos)
+            event = "entry"
+            notify(f"🟢 {sym} — TRADE: go long",
+                   f"size {vt_size:.2f}×  entry {last:{pxf}}  SL {stop:{pxf}}  TP {tgt:{pxf}}")
+            action("●", _GRN, f"TRADE — GO LONG now  (size {vt_size:.2f}×)", _GRN)
+            note("fast turned up inside a non-bearish trend — early entry")
+            note(f"entry {last:{pxf}}  ·  stop {stop:{pxf}}  ·  target {tgt:{pxf}}")
         else:
-            if held is not None:
-                e, s, t = held["entry"], held["stop"], held["tp"]
-                res = ("target hit ✅" if last >= t else "stop hit ⛔" if last <= s
-                       else f"{((last-e)/(e-s) if e!=s else 0):+.2f}R")
-                pos.pop(key, None)
-                save_positions(pos)
-                event = "exit"
-                notify(f"⚪ {sym} — EXIT: close long", f"{res}   entry {e:{pxf}} → now {last:{pxf}}")
-                action("●", _RED, f"EXIT — CLOSE your long now  ({res})", _RED)
-                note("trend rolled over — this is an exit, NOT a sell/short")
-            else:
-                action("○", _AMB, "NO TRADE — stay flat", _AMB)
-                note(f"{sym} trend is not up — do nothing (long-only: never short here)")
+            action("○", _AMB, "NO TRADE — stay flat", _AMB)
+            if not trend_ok:
+                reason = "slow trend is down"
+            elif fast.slope <= 0:
+                reason = "fast hasn't turned up yet"
+            else:   # fast up + trend ok but volume gate blocked it
+                reason = f"fast turned up but volume light ({vol_ctx}) — waiting for participation"
+            note(f"{sym}: {reason} — do nothing (long-only: never short here)")
     else:
         action("○", _DIM, "NO TRADE — context only", _AMB)
-        if k.direction == "BULL":
+        if slow.direction == "BULL":
             note(f"{sym} trend is up, but no backtested edge — background only")
-        elif k.direction == "BEAR":
+        elif slow.direction == "BEAR":
             note(f"{sym} trend is down, but no backtested edge — background only")
         else:
             note(f"no tradeable edge on {m['label']} — use as background only")
 
-    return {"bar": df.index[-1], "fire_bar": k.last_fire_bar,
-            "fire_dir": k.last_fire_dir, "material": k.bp_material, "event": event}
+    return {"bar": df.index[-1], "fire_bar": fast.last_fire_bar,
+            "fire_dir": fast.last_fire_dir, "material": fast.bp_material, "event": event}
 
 
 def watch(keys, interval_min):
