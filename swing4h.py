@@ -250,6 +250,12 @@ def fetch_4h(ticker, closed_only=True, with_forming=False):
         raise RuntimeError(f"no data for {ticker}")
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    # Pin the index to UTC before resampling. Yahoo's tz varies by ticker and
+    # environment, and resample("4h") bins on the index's own wall clock — a
+    # non-UTC index silently shifts every bin edge (different bar count, wrong
+    # bar labels) and breaks any downstream "+ offset" display arithmetic.
+    df.index = (df.index.tz_localize("UTC") if df.index.tz is None
+                else df.index.tz_convert("UTC"))
     o = df["Open"].resample("4h").first()
     h = df["High"].resample("4h").max()
     l = df["Low"].resample("4h").min()
