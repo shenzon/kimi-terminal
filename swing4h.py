@@ -351,6 +351,35 @@ def guidance(k: KimiL1, key=None):
     return "Wait — no directional slope"
 
 
+# ── terminal styling (256-color; auto-off when piped or NO_COLOR set) ──────
+_USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+
+def _c(s, *codes):
+    """Wrap s in ANSI SGR codes, or return it untouched when color is off."""
+    if not _USE_COLOR or not codes:
+        return s
+    return "\033[" + ";".join(codes) + "m" + s + "\033[0m"
+
+_DIM, _B = "2", "1"
+_GOLD, _SILV, _BLUE, _CYAN = "38;5;178", "38;5;250", "38;5;111", "38;5;80"
+_GRN, _RED, _AMB, _WHT = "38;5;114", "38;5;203", "38;5;214", "38;5;255"
+_ACCENT = {"gold": _GOLD, "xagusd": _SILV, "eurusd": _BLUE, "usdjpy": _CYAN}
+_DIR = {"BULL": ("▲ BULL", _GRN), "BEAR": ("▼ BEAR", _RED),
+        "FLAT": ("— FLAT", _AMB), "WARMING": ("⏳ WARM", _DIM)}
+
+
+def _meter(score, width=22):
+    """Bias track: red/amber/green zones at the real BEAR/BULL thresholds,
+    with a bright marker sitting at the current score."""
+    pos = round(score / 100 * (width - 1))
+    cells = []
+    for i in range(width):
+        v = i / (width - 1) * 100
+        zone = _RED if v < BEAR_SCORE else _GRN if v >= BULL_SCORE else _AMB
+        cells.append(_c("◆", _B, _WHT) if i == pos else _c("━", zone))
+    return "".join(cells)
+
+
 def analyze(key):
     m = INSTRUMENTS[key]
     df, forming = fetch_4h(m["ticker"], with_forming=True)
@@ -366,38 +395,53 @@ def analyze(key):
     pxf, slp = m["px"], m["slp"]
     dist = k.trend_dist_pct(last)
     vt_size, vt_ctx = vol_target_size(close) if key in TRADEABLE else (1.0, "")
-    dir_sym = {"BULL": "▲ BULL", "BEAR": "▼ BEAR",
-               "FLAT": "— FLAT", "WARMING": "⏳ WARMING"}[k.direction]
+    dtxt, dcol = _DIR[k.direction]
 
     # ATR stop/target aligned to the slope-sign bias (1.5 / 3.0 ATR ~ 1:2R)
     long_side = k.slope > 0
     stop = last - 1.5 * a if long_side else last + 1.5 * a
     tgt = last + 3.0 * a if long_side else last - 3.0 * a
 
-    bar = "".join("█" if i < round(k.bias_score / 10) else "░" for i in range(10))
+    # ── card: left accent spine + dim labels / bright values ──
+    acc = _ACCENT.get(key, _CYAN)
+    sp = _c("▌", acc)
+    sym = m["label"].split()[0]                 # "GOLD" / "EUR/USD"
+    desc = m["label"].split("(", 1)[-1].rstrip(")") if "(" in m["label"] else ""
 
-    print(f"\n{'='*60}\n \U0001F4D0 KIMI L1  —  {m['label']}")
-    b_open = df.index[-1]
-    b_close = b_open + BAR
-    print(f" bar {b_open:%Y-%m-%d %H:%M}→{b_close:%H:%M} UTC closed   "
-          f"({len(df)} 4H bars, λ={lam:{slp}} auto)")
-    if forming is not None:
-        print(f" forming  {forming.name:%H:%M}→{forming.name + BAR:%H:%M} UTC   "
-              f"last {float(forming['Close']):{pxf}}  (not in the read)")
-    print("-" * 60)
-    print(f"  BIAS        {bar}  {k.bias_score}/100   ({dir_sym})")
-    print(f"  Slope       {k.slope:+{slp}} /bar   (sign: {'UP' if k.slope>0 else 'DOWN' if k.slope<0 else 'FLAT'})")
-    print(f"  Trend level {k.trend:{pxf}}   price {last:{pxf}}  ({dist:+.2f}% vs trend)")
-    print(f"  Norm scale  ±{k.safe_amp:{slp}} /bar   ({k.bp_count} breakpoints)")
+    def row(lbl, val):
+        print(f"{sp}  {_c(lbl.ljust(9), _DIM)} {val}")
+
+    b_open, b_close = df.index[-1], df.index[-1] + BAR
+    scol = _GRN if k.slope > 0 else _RED if k.slope < 0 else _AMB
+    distc = _GRN if dist >= 0 else _RED
     dd = "▲" if k.dual > 0 else "▼" if k.dual < 0 else "—"
-    print(f"  Dual press. {dd} {k.dual_pct:.1f}% of λ")
+
+    print()
+    print(f"{sp} {_c('📐 KIMI L1', _DIM)}  {_c(sym, _B, acc)}"
+          f"{('  ' + _c(desc, _DIM)) if desc else ''}   {_c('[ ' + dtxt + ' ]', _B, dcol)}")
+    print(f"{sp} {_c(f'{b_open:%Y-%m-%d %H:%M}→{b_close:%H:%M} UTC · {len(df)} bars · λ {lam:{slp}}', _DIM)}")
+    if forming is not None:
+        f_last = float(forming["Close"])
+        print(f"{sp} {_c(f'forming {forming.name:%H:%M}→{forming.name + BAR:%H:%M} · last {f_last:{pxf}} (excl)', _DIM)}")
+    print(sp)
+    row("bias", f"{_meter(k.bias_score)}  {_c(f'{k.bias_score}/100', _B)}  {_c(dtxt, dcol)}")
+    row("slope", f"{_c(f'{k.slope:+{slp}}', _B, scol)} {_c('/bar', _DIM)}")
+    row("trend", f"{k.trend:{pxf}}   {_c('price', _DIM)} {_c(f'{last:{pxf}}', _B)}  "
+                 f"{_c(f'{dist:+.2f}%', distc)}")
+    row("norm ±", f"{k.safe_amp:{slp}} {_c(f'/bar · {k.bp_count} breakpoints', _DIM)}")
+    row("dual", _c(f"{dd} {k.dual_pct:.1f}% of λ", _DIM))
     if key in TRADEABLE:
-        print(f"  Vol-target  {vt_size:.2f}×  ({vt_ctx})")
-    print("-" * 60)
+        row("size", f"{_c(f'{vt_size:.2f}×', _B)}  {_c(vt_ctx, _DIM)}")
+    print(sp)
+
+    def action(dot, dotcol, head, headcol):
+        print(f"{sp}  {_c('▶', _DIM)} {_c(dot, dotcol)} {_c(head, _B, headcol)}")
+
+    def note(txt):
+        print(f"{sp}    {_c(txt, _DIM)}")
 
     # ── ONE plain-English bottom line: TRADE / NO TRADE / EXIT ──
     event = None  # "entry" / "exit" for watch-loop notification
-    sym = m["label"].split()[0]   # "GOLD" / "SILVER"
     if key in TRADEABLE:
         pos = load_positions()
         held = pos.get(key)
@@ -411,15 +455,17 @@ def analyze(key):
                 event = "entry"
                 notify(f"🟢 {sym} — TRADE: go long",
                        f"size {vt_size:.2f}×  entry {last:{pxf}}  SL {stop:{pxf}}  TP {tgt:{pxf}}")
-                print(f"  ➤ ACTION     🟢 TRADE — GO LONG now  (size {vt_size:.2f}×)")
+                action("●", _GRN, f"TRADE — GO LONG now  (size {vt_size:.2f}×)", _GRN)
             else:
                 sz = held.get("size", 1.0)   # back-compat: positions saved before sizing
-                print(f"  ➤ ACTION     🟢 TRADE — HOLD your long  (size {sz:.2f}×)")
+                action("●", _GRN, f"TRADE — HOLD your long  (size {sz:.2f}×)", _GRN)
             e, s, t = held["entry"], held["stop"], held["tp"]
             r_now = (last - e) / (e - s) if e != s else 0.0
             prog = (last - e) / (t - e) * 100 if t != e else 0.0
-            print(f"     entry {e:{pxf}}  ·  stop {s:{pxf}}  ·  target {t:{pxf}}")
-            print(f"     now {last:{pxf}}  →  {r_now:+.2f}R  ({prog:+.0f}% to target)")
+            rc = _GRN if r_now >= 0 else _RED
+            note(f"entry {e:{pxf}}  ·  stop {s:{pxf}}  ·  target {t:{pxf}}")
+            print(f"{sp}    {_c('now', _DIM)} {_c(f'{last:{pxf}}', _B)} → "
+                  f"{_c(f'{r_now:+.2f}R', _B, rc)} {_c(f'({prog:+.0f}% to target)', _DIM)}")
         else:
             if held is not None:
                 e, s, t = held["entry"], held["stop"], held["tp"]
@@ -429,15 +475,19 @@ def analyze(key):
                 save_positions(pos)
                 event = "exit"
                 notify(f"⚪ {sym} — EXIT: close long", f"{res}   entry {e:{pxf}} → now {last:{pxf}}")
-                print(f"  ➤ ACTION     🔴 EXIT — CLOSE your long now  ({res})")
-                print(f"     trend rolled over — this is an exit, NOT a sell/short")
+                action("●", _RED, f"EXIT — CLOSE your long now  ({res})", _RED)
+                note("trend rolled over — this is an exit, NOT a sell/short")
             else:
-                print(f"  ➤ ACTION     ⚪ NO TRADE — stay flat")
-                print(f"     {sym} trend is not up — do nothing (long-only: never short here)")
+                action("○", _AMB, "NO TRADE — stay flat", _AMB)
+                note(f"{sym} trend is not up — do nothing (long-only: never short here)")
     else:
-        print(f"  ➤ ACTION     ⚪ NO TRADE — context only")
-        print(f"     no tradeable edge on {m['label']} — use as background only")
-    print("=" * 60)
+        action("○", _DIM, "NO TRADE — context only", _AMB)
+        if k.direction == "BULL":
+            note(f"{sym} trend is up, but no backtested edge — background only")
+        elif k.direction == "BEAR":
+            note(f"{sym} trend is down, but no backtested edge — background only")
+        else:
+            note(f"no tradeable edge on {m['label']} — use as background only")
 
     return {"bar": df.index[-1], "fire_bar": k.last_fire_bar,
             "fire_dir": k.last_fire_dir, "material": k.bp_material, "event": event}
