@@ -64,6 +64,7 @@ INSTRUMENTS = {
     "gold":   {"ticker": "GC=F",     "label": "GOLD  (XAUUSD / GC futures)",   "px": ".2f", "slp": "0.3f", "mintick": 0.01},
     "xagusd": {"ticker": "SI=F",     "label": "SILVER (XAGUSD / SI futures)",  "px": ".3f", "slp": "0.4f", "mintick": 0.005},
     "eurusd": {"ticker": "EURUSD=X", "label": "EUR/USD",                       "px": ".5f", "slp": "0.6f", "mintick": 0.00001},
+    "usdjpy": {"ticker": "USDJPY=X", "label": "USD/JPY",                       "px": ".3f", "slp": "0.4f", "mintick": 0.001},
 }
 
 # Instruments with a backtest-validated LONG-only edge → get the TRADE/EXIT
@@ -232,7 +233,17 @@ class KimiL1:
         return 0.0 if not self.trend or src == 0 else (src - self.trend) / src * 100.0
 
 
-def fetch_4h(ticker):
+BAR = pd.Timedelta("4h")
+
+
+def fetch_4h(ticker, closed_only=True, with_forming=False):
+    """Resampled 4H bars. Index labels are bin LEFT edges (bar open); the bar
+    labelled t covers [t, t+4h). With closed_only the still-forming bar is
+    dropped, so the read only ever moves when a bar actually closes.
+
+    Returns the closed bars, or (closed_bars, forming_bar_or_None) if
+    with_forming.
+    """
     df = yf.download(ticker, period="720d", interval="1h",
                      auto_adjust=False, progress=False)
     if df.empty:
@@ -243,7 +254,15 @@ def fetch_4h(ticker):
     h = df["High"].resample("4h").max()
     l = df["Low"].resample("4h").min()
     c = df["Close"].resample("4h").last()
-    return pd.DataFrame({"Open": o, "High": h, "Low": l, "Close": c}).dropna(subset=["Close"])
+    out = pd.DataFrame({"Open": o, "High": h, "Low": l,
+                        "Close": c}).dropna(subset=["Close"])
+    forming = None
+    if closed_only and len(out):
+        now = pd.Timestamp.now(tz=out.index.tz)
+        if out.index[-1] + BAR > now:
+            forming = out.iloc[-1]
+            out = out.iloc[:-1]
+    return (out, forming) if with_forming else out
 
 
 def atr(df, n=14):
@@ -328,7 +347,7 @@ def guidance(k: KimiL1, key=None):
 
 def analyze(key):
     m = INSTRUMENTS[key]
-    df = fetch_4h(m["ticker"])
+    df, forming = fetch_4h(m["ticker"], with_forming=True)
     close = df["Close"]
     lam = auto_lambda(close)
 
@@ -352,7 +371,13 @@ def analyze(key):
     bar = "".join("█" if i < round(k.bias_score / 10) else "░" for i in range(10))
 
     print(f"\n{'='*60}\n \U0001F4D0 KIMI L1  —  {m['label']}")
-    print(f" bar close {df.index[-1]:%Y-%m-%d %H:%M} UTC   ({len(df)} 4H bars, λ={lam:{slp}} auto)")
+    b_open = df.index[-1]
+    b_close = b_open + BAR
+    print(f" bar {b_open:%Y-%m-%d %H:%M}→{b_close:%H:%M} UTC closed   "
+          f"({len(df)} 4H bars, λ={lam:{slp}} auto)")
+    if forming is not None:
+        print(f" forming  {forming.name:%H:%M}→{forming.name + BAR:%H:%M} UTC   "
+              f"last {float(forming['Close']):{pxf}}  (not in the read)")
     print("-" * 60)
     print(f"  BIAS        {bar}  {k.bias_score}/100   ({dir_sym})")
     print(f"  Slope       {k.slope:+{slp}} /bar   (sign: {'UP' if k.slope>0 else 'DOWN' if k.slope<0 else 'FLAT'})")

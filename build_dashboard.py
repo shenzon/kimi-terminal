@@ -2,7 +2,7 @@
 """
 Build the Kimi L1 dashboard (index.html) from live 4H data.
 
-Pulls gold / silver / EUR-USD via swing4h.py, computes the current state
+Pulls gold / silver / EUR-USD / USD-JPY via swing4h.py, computes the current state
 (bias, direction, vol-target size, TRADE/EXIT/NO-TRADE verdict, price×trend
 sparkline), and injects it as JSON into dashboard_template.html. Times in
 Malaysia/Singapore (MYT/SGT, UTC+8).
@@ -71,7 +71,9 @@ def series_state(key):
         "vt_size": round(vt_size, 2), "vt_ctx": vt_ctx,
         "decimals": int(m["px"].strip(".f")),
         "action": action, "sub": sub, "levels": lvl,
-        "bar_myt": (df.index[-1] + MYT).strftime("%a %d %b %Y · %H:%M"),
+        # index labels are bin LEFT edges (bar open) — show the CLOSE, or the
+        # page reads a full 4H stale now that the forming bar is dropped
+        "bar_myt": (df.index[-1] + S.BAR + MYT).strftime("%a %d %b %Y · %H:%M"),
         "bars": len(df), "lam": round(lam, 4), "spark": spark,
     }
 
@@ -94,8 +96,8 @@ def fetch_with_retry(ticker, tries=4):
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "index.html"
     state = {
-        "generated_myt": (pd.Timestamp.utcnow() + MYT).strftime("%a %d %b %Y · %H:%M"),
-        "instruments": [series_state(k) for k in ("gold", "xagusd", "eurusd")],
+        "generated_myt": (pd.Timestamp.now(tz="UTC") + MYT).strftime("%a %d %b %Y · %H:%M"),
+        "instruments": [series_state(k) for k in ("gold", "xagusd", "eurusd", "usdjpy")],
     }
     template = (HERE / "dashboard_template.html").read_text()
     html = template.replace("__KIMI_DATA__", json.dumps(state))
