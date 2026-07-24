@@ -1,0 +1,204 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────
+// Kimi L1 Dual-Lens — SILVER (XAGUSD) 4H
+// Faithful port of swing4h.py: streaming CUSUM change-point slope tracker with
+// g-h level correction, run as TWO lenses on the same 4H bars —
+//   SLOW (N=12) → trend regime: bias, BULL/FLAT/BEAR label, trend line, EXIT
+//   FAST (N=4)  → early turns: entry timing
+// Long-only asymmetric rule: ENTER when FAST turns up inside a non-bearish SLOW
+// regime WITH volume confirmation; HOLD while SLOW != BEAR; EXIT when SLOW goes
+// BEAR. Designed for XAGUSD on the 4H timeframe.
+//
+// NOTE ON DATA: this runs on the CHART's bars — apply it to a 4H XAGUSD chart.
+// State updates once per closed bar (Pine rolls back the forming bar each tick,
+// so it settles exactly on close, mirroring swing4h's closed-bar-only feed).
+// ─────────────────────────────────────────────────────────────────────────
+indicator("Kimi L1 Dual-Lens — Silver 4H", shorttitle="KimiL1 XAG 4H", overlay=true, max_labels_count=500)
+
+// ── params (match swing4h.py defaults) ──
+ALPHA          = input.float(0.15, "Slope adj (alpha)",      group="Kimi L1 core", step=0.01)
+LEVEL_GAIN     = input.float(0.10, "Level gain (g-h)",       group="Kimi L1 core", step=0.01)
+GAP_CLIP       = input.float(3.0,  "Gap clip (x lambda)",    group="Kimi L1 core", step=0.5)
+MIN_BP_FRAC    = input.float(0.10, "Materiality frac",       group="Kimi L1 core", step=0.01)
+AMP_LEN        = input.int(50,     "Amp decay length",       group="Kimi L1 core")
+AMP_FLOOR_MULT = input.float(1.5,  "Amp floor mult",         group="Kimi L1 core", step=0.1)
+PEAK_EXPAND    = input.float(1.05, "Peak expand",            group="Kimi L1 core", step=0.01)
+WARMUP_BPS     = input.int(2,      "Warmup breakpoints",     group="Kimi L1 core")
+WARMUP_BARS    = input.int(30,     "Warmup bars",            group="Kimi L1 core")
+BULL_SCORE     = input.int(65,     "Bull score >=",          group="Kimi L1 core")
+BEAR_SCORE     = input.int(35,     "Bear score <=",          group="Kimi L1 core")
+MINTICK        = input.float(0.005,"Mintick floor",          group="Kimi L1 core", step=0.001)
+
+AUTOLAM_LEN = input.int(100, "Auto-lambda median lookback",  group="Dual lens")
+SLOW_N      = input.float(12.0, "SLOW swing N (trend/label)", group="Dual lens", step=0.5)
+FAST_N      = input.float(4.0,  "FAST swing N (entry)",       group="Dual lens", step=0.5)
+
+USE_VOL_GATE = input.bool(true, "Volume-confirm entry",        group="Volume gate")
+VOL_LOOKBACK = input.int(20,    "Volume median lookback",      group="Volume gate")
+VOL_MULT     = input.float(1.0, "Entry vol >= mult x median",  group="Volume gate", step=0.1)
+
+confirmed_only = input.bool(true, "Signal only on bar close (no repaint)", group="Signals")
+
+// ── one Kimi L1 lens as a function (var state → each call site is independent) ──
+f_kimi(float src, float lam) =>
+    var float trend           = na
+    var float slope           = 0.0
+    var float dual            = 0.0
+    var int   bp_count        = 0
+    var int   first_bp_bar    = na
+    var float bar_change_mad  = na
+    var float slope_amplitude = na
+    var float prev_src        = na
+
+    if na(trend)
+        trend := src
+        slope := 0.0
+        dual  := 0.0
+
+    prev_slope = slope
+    old_slope  = slope
+
+    // 1-3. predict → residual → g-h level correction
+    predicted = trend + old_slope
+    resid     = src - predicted
+    trend    := predicted + LEVEL_GAIN * resid
+
+    // 4. accumulate post-correction residual into the dual
+    dual := dual + (src - trend)
+
+    // 5. soft-threshold vs lambda
+    delta = math.sign(dual) * math.max(0.0, math.abs(dual) - lam)
+
+    // 6. gap clip
+    cap = lam * GAP_CLIP
+    if math.abs(delta) > cap
+        delta := math.sign(delta) * cap
+
+    // 7. slope update
+    slope := old_slope + delta * ALPHA
+
+    // 8. anti-windup reset on breakpoint
+    if delta != 0.0
+        dual := 0.0
+
+    slope_change = slope - prev_slope
+    isbp         = delta != 0.0
+    if isbp
+        bp_count := bp_count + 1
+        if na(first_bp_bar)
+            first_bp_bar := bar_index
+
+    // amp floor: EMA of |bar change|
+    if not na(prev_src)
+        change = src - prev_src
+        if na(bar_change_mad)
+            bar_change_mad := math.abs(change)
+        else
+            a = 2.0 / (AMP_LEN + 1.0)
+            bar_change_mad := bar_change_mad * (1.0 - a) + math.abs(change) * a
+    amp_floor = (na(bar_change_mad) ? MINTICK * 100.0 : bar_change_mad) * AMP_FLOOR_MULT
+
+    // slope amplitude: peak tracker w/ EMA decay-down
+    cur_amp = math.abs(slope)
+    if na(slope_amplitude)
+        if cur_amp > 0.0
+            slope_amplitude := math.max(cur_amp * PEAK_EXPAND, amp_floor)
+    else if cur_amp > slope_amplitude
+        slope_amplitude := math.max(cur_amp * PEAK_EXPAND, amp_floor)
+    else
+        d = 2.0 / (AMP_LEN + 1.0)
+        slope_amplitude := slope_amplitude * (1.0 - d) + cur_amp * d
+
+    safe_amp = math.max(na(slope_amplitude) ? amp_floor : slope_amplitude, MINTICK)
+
+    // materiality + warmup + bias score
+    bp_material      = isbp and math.abs(slope_change) >= MIN_BP_FRAC * safe_amp
+    bars_since_first = na(first_bp_bar) ? 0 : bar_index - first_bp_bar
+    warmed           = not na(slope_amplitude) and (bp_count >= WARMUP_BPS or bars_since_first >= WARMUP_BARS)
+    slope_norm       = math.max(0.0, math.min(100.0, 50.0 + (slope / safe_amp) * 50.0))
+    bias             = warmed ? int(math.round(slope_norm)) : 50
+
+    prev_src := src
+    [trend, slope, bias, warmed, bp_material, slope_change, dual, safe_amp]
+
+f_dir(int bias, bool warmed) =>
+    not warmed ? "WARMING" : bias >= BULL_SCORE ? "BULL" : bias <= BEAR_SCORE ? "BEAR" : "FLAT"
+
+// ── auto-lambda: N x median(|dclose|) over the lookback ──
+// NOTE vs swing4h.py: that computes ONE fixed lambda (median of the last 100
+// bars) and applies it across all history; here lambda is a ROLLING 100-bar
+// median that updates each bar. Rolling is the non-repainting choice for a live
+// indicator, but historical signals won't reproduce swing4h's exactly.
+// Guard: percentile_nearest_rank is na until AUTOLAM_LEN bars exist — fall back
+// so lambda is never na (na would poison the persistent lens state).
+absd     = math.abs(ta.change(close))
+raw_med  = ta.percentile_nearest_rank(absd, AUTOLAM_LEN, 50)
+med_move = na(raw_med) ? nz(absd, MINTICK) : raw_med
+lam_slow = med_move * SLOW_N
+lam_fast = med_move * FAST_N
+
+// ── run both lenses ──
+[t_s, sl_s, bias_s, warm_s, mat_s, sch_s, dual_s, samp_s] = f_kimi(close, lam_slow)
+[t_f, sl_f, bias_f, warm_f, mat_f, sch_f, dual_f, samp_f] = f_kimi(close, lam_fast)
+dir_s = f_dir(bias_s, warm_s)
+
+// ── volume gate (fail-open on 0/na volume) ──
+vol_med = ta.percentile_nearest_rank(volume, VOL_LOOKBACK, 50)
+vol_ok  = not USE_VOL_GATE or na(volume) or volume <= 0 or na(vol_med) ? true : volume >= VOL_MULT * vol_med
+
+// ── asymmetric long-only state machine ──
+trend_ok  = dir_s != "BEAR"
+want_long = sl_f > 0 and trend_ok and vol_ok
+
+var bool in_pos    = false
+bool entry_sig = false
+bool exit_sig  = false
+gate = confirmed_only ? barstate.isconfirmed : true
+if gate
+    if in_pos
+        if not trend_ok
+            in_pos  := false
+            exit_sig := true
+    else
+        if want_long
+            in_pos   := true
+            entry_sig := true
+
+// ── plots ──
+trend_col = sl_s > 0 ? color.new(color.teal, 0) : sl_s < 0 ? color.new(color.red, 0) : color.new(color.gray, 0)
+plot(t_s, "SLOW trend", color=trend_col, linewidth=2)
+
+plotshape(entry_sig, "ENTER long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="LONG")
+plotshape(exit_sig,  "EXIT long",  style=shape.xcross,     location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="EXIT")
+
+// subtle regime background
+bgcolor(dir_s == "BULL" ? color.new(color.teal, 92) : dir_s == "BEAR" ? color.new(color.red, 92) : na)
+
+// ── status table ──
+verdict = in_pos ? "HOLD LONG" : want_long ? "GO LONG" : dir_s == "BEAR" ? "FLAT (trend down)" : sl_f <= 0 ? "WAIT (fast not up)" : "WAIT (volume light)"
+vcol    = in_pos or want_long ? color.green : color.gray
+
+var table tb = table.new(position.top_right, 2, 7, border_width=1)
+
+// global-scope helper (Pine forbids defining functions inside if-blocks)
+f_cell(int r, string k, string v, color c) =>
+    table.cell(tb, 0, r, k, text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(tb, 1, r, v, text_color=c,          text_size=size.small, text_halign=text.align_right)
+
+if barstate.islast
+    table.cell(tb, 0, 0, "Kimi L1 · XAG 4H", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(tb, 1, 0, dir_s, text_color=(dir_s=="BULL"?color.teal:dir_s=="BEAR"?color.red:color.orange), text_size=size.small, text_halign=text.align_right)
+    f_cell(1, "bias (slow)",  str.tostring(bias_s) + "/100", color.white)
+    f_cell(2, "slope slow",   str.tostring(sl_s, "#.####"),  sl_s>0?color.teal:color.red)
+    f_cell(3, "slope fast",   str.tostring(sl_f, "#.####"),  sl_f>0?color.teal:color.red)
+    f_cell(4, "vol gate",     vol_ok?"ok":"light",           vol_ok?color.teal:color.orange)
+    f_cell(5, "trend",        str.tostring(t_s, "#.###"),    color.white)
+    f_cell(6, "verdict",      verdict,                       vcol)
+
+// ── alerts ──
+alertcondition(entry_sig, "Kimi L1 XAG — ENTER long", "Kimi L1 XAG 4H: GO LONG (fast up, slow non-bearish, volume ok)")
+alertcondition(exit_sig,  "Kimi L1 XAG — EXIT long",  "Kimi L1 XAG 4H: EXIT long (slow trend rolled over to BEAR)")
+
+// timeframe nudge
+if barstate.islast and timeframe.period != "240"
+    label.new(bar_index, high, "Apply on 4H for the intended read", color=color.new(color.orange, 20), style=label.style_label_down, textcolor=color.white, size=size.small)

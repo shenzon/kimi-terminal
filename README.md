@@ -15,6 +15,16 @@ A GitHub Action rebuilds `index.html` from live data every 4H bar
 
 Not financial advice.
 
+## TradingView indicator
+
+`pine/silver_kimi_l1_4h.pine` — a Pine v5 port of the dual-lens model for
+**XAGUSD 4H**: SLOW lens (N=12) drives the bias / trend label / exit, FAST lens
+(N=4) drives entry timing, with a volume-confirmation gate and the asymmetric
+long-only ENTER/HOLD/EXIT rule. Paste into the TradingView Pine Editor on a 4H
+XAGUSD chart. Core math matches `swing4h.py`; λ is a rolling 100-bar median
+(vs the Python's single fixed λ), so historical signals won't reproduce it
+tick-for-tick.
+
 ## Local build
 ```
 pip install -r requirements.txt
