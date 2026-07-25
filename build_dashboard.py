@@ -32,13 +32,15 @@ def series_state(key):
 
     # DUAL LENS (matches live swing4h): SLOW = trend regime (bias/label/trend/
     # exit), FAST = early turns (entry timing). Run slow manually to keep the
-    # trend sparkline; fast only needs its final slope.
-    slow = S.KimiL1(lam=S.auto_lambda(close, S.SLOW_SWING_N), mintick=mintick)
+    # trend sparkline; fast only needs its final slope. Frozen λ anchor so the
+    # hosted read is stable day-over-day (matches the CLI).
+    anchor = S.LAM_ANCHOR.get(key)
+    slow = S.KimiL1(lam=S.auto_lambda(close, S.SLOW_SWING_N, anchor), mintick=mintick)
     trend_hist = []
     for px in close.to_numpy(dtype=float):
         slow.update(px)
         trend_hist.append(slow.trend)
-    fast = S.run_lens(close, S.FAST_SWING_N, mintick)
+    fast = S.run_lens(close, S.FAST_SWING_N, mintick, anchor)
 
     last = float(close.iloc[-1])
     a = S.atr(df)

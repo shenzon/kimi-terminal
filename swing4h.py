@@ -96,6 +96,21 @@ AUTOLAM_LEN    = 100    # median lookback for auto-lambda
 # docs/superpowers/specs/2026-07-24-swing4h-dual-lens-design.md.
 FAST_SWING_N = 4.0
 SLOW_SWING_N = 12.0
+# FROZEN λ ANCHOR (2026-07-25). λ = ANCHOR x N. The anchor was the 100-bar
+# median(|Δ4H|), RE-COMPUTED every run — but on a rolling 720d fetch that median
+# swings ~70% in a month, silently rewriting breakpoint history: the live read
+# (dir + in-trade state) differed day-over-day on 12/30 gold days purely from λ
+# drift, and the backtest Sharpe moved 1.63->1.06 on one day of new data. The
+# fixed-λ surface is jagged (gold 0.86-1.35, silver 0.49-1.46 across the grid),
+# so no λ is knowably "optimal" — freezing just makes the model MEAN THE SAME
+# THING every day. Re-anchor manually only if a symbol's median bar-move shifts
+# ~±50% sustained. Investigation: scratchpad/lambda_stability.py, 2026-07-25.
+LAM_ANCHOR = {
+    "gold":   10.9,        # slow 130.8 / fast 43.6
+    "xagusd": 0.357502,    # slow 4.29  / fast 1.43
+    "eurusd": 0.000654638, # slow 0.00786 / fast 0.00262
+    "usdjpy": 0.098999,    # slow 1.188 / fast 0.396
+}
 PEAK_EXPAND    = 1.05
 # Vol-target sizing (kimi_qte.py, 2026-07-23): robust Sharpe lift ~0.97->1.25,
 # MaxDD ~-21%->-13% on gold Rule D. size = median_vol / realized_vol(W), capped.
@@ -293,17 +308,19 @@ def atr(df, n=14):
     return tr.ewm(alpha=1 / n, adjust=False).mean().iloc[-1]
 
 
-def auto_lambda(close: pd.Series, n: float) -> float:
-    """n x median(|dsrc|) swing anchor over the last AUTOLAM_LEN bars.
+def auto_lambda(close: pd.Series, n: float, anchor: float = None) -> float:
+    """n x swing-anchor, where the anchor is median(|dsrc|). Pass a FROZEN
+    `anchor` (from LAM_ANCHOR) for a stable day-over-day λ; anchor=None falls
+    back to re-computing the 100-bar median (unstable — see LAM_ANCHOR note).
     n = FAST_SWING_N (twitchy) or SLOW_SWING_N (trend-stable)."""
-    move = close.diff().abs().tail(AUTOLAM_LEN)
-    med = float(np.nanmedian(move))
-    return med * n
+    if anchor is None:
+        anchor = float(np.nanmedian(close.diff().abs().tail(AUTOLAM_LEN)))
+    return anchor * n
 
 
-def run_lens(close: pd.Series, n: float, mintick: float) -> KimiL1:
+def run_lens(close: pd.Series, n: float, mintick: float, anchor: float = None) -> KimiL1:
     """Run a full KimiL1 pass over `close` at swing multiplier `n`."""
-    k = KimiL1(lam=auto_lambda(close, n), mintick=mintick)
+    k = KimiL1(lam=auto_lambda(close, n, anchor), mintick=mintick)
     for px in close.to_numpy(dtype=float):
         k.update(px)
     return k
@@ -430,9 +447,11 @@ def analyze(key):
     mintick = m.get("mintick", 0.0001)
 
     # DUAL LENS on the same 4H bars: slow = trend regime (label + exit),
-    # fast = early turns (fired/building signal + entry timing).
-    slow = run_lens(close, SLOW_SWING_N, mintick)
-    fast = run_lens(close, FAST_SWING_N, mintick)
+    # fast = early turns (fired/building signal + entry timing). Frozen λ anchor
+    # (LAM_ANCHOR) for a stable day-over-day read; None-fallback stays adaptive.
+    anchor = LAM_ANCHOR.get(key)
+    slow = run_lens(close, SLOW_SWING_N, mintick, anchor)
+    fast = run_lens(close, FAST_SWING_N, mintick, anchor)
 
     last = float(close.iloc[-1])
     a = atr(df)
