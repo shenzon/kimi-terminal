@@ -29,9 +29,16 @@ BULL_SCORE     = input.int(65,     "Bull score >=",          group="Kimi L1 core
 BEAR_SCORE     = input.int(35,     "Bear score <=",          group="Kimi L1 core")
 MINTICK        = input.float(0.005,"Mintick floor",          group="Kimi L1 core", step=0.001)
 
-AUTOLAM_LEN = input.int(100, "Auto-lambda median lookback",  group="Dual lens")
 SLOW_N      = input.float(12.0, "SLOW swing N (trend/label)", group="Dual lens", step=0.5)
 FAST_N      = input.float(4.0,  "FAST swing N (entry)",       group="Dual lens", step=0.5)
+// FROZEN lambda anchor — matches swing4h.py LAM_ANCHOR["xagusd"]. A rolling
+// median recomputes every bar and silently rewrites breakpoint history (~70%
+// swing/month on the Python side), so the read drifts day-over-day. Freeze it
+// so the model means the same thing every bar. Re-anchor manually only on a
+// ~±50% sustained shift in the 4H median move. Toggle off to go back to rolling.
+FREEZE_LAM  = input.bool(true,      "Freeze lambda anchor",        group="Dual lens")
+LAM_ANCHOR  = input.float(0.357502, "Frozen anchor (median |dclose|)", group="Dual lens", step=0.0001)
+AUTOLAM_LEN = input.int(100,        "Rolling lookback (if not frozen)", group="Dual lens")
 
 USE_VOL_GATE = input.bool(true, "Volume-confirm entry",        group="Volume gate")
 VOL_LOOKBACK = input.int(20,    "Volume median lookback",      group="Volume gate")
@@ -124,16 +131,15 @@ f_kimi(float src, float lam) =>
 f_dir(int bias, bool warmed) =>
     not warmed ? "WARMING" : bias >= BULL_SCORE ? "BULL" : bias <= BEAR_SCORE ? "BEAR" : "FLAT"
 
-// ── auto-lambda: N x median(|dclose|) over the lookback ──
-// NOTE vs swing4h.py: that computes ONE fixed lambda (median of the last 100
-// bars) and applies it across all history; here lambda is a ROLLING 100-bar
-// median that updates each bar. Rolling is the non-repainting choice for a live
-// indicator, but historical signals won't reproduce swing4h's exactly.
-// Guard: percentile_nearest_rank is na until AUTOLAM_LEN bars exist — fall back
-// so lambda is never na (na would poison the persistent lens state).
+// ── lambda: N x median(|dclose|) anchor ──
+// FROZEN (default) matches swing4h.py: one fixed anchor across all history, so
+// the read is stable day-over-day. ROLLING (toggle) recomputes a 100-bar median
+// each bar — adaptive but drifts. Guard: percentile_nearest_rank is na until
+// AUTOLAM_LEN bars exist — fall back so lambda is never na (na poisons state).
 absd     = math.abs(ta.change(close))
 raw_med  = ta.percentile_nearest_rank(absd, AUTOLAM_LEN, 50)
-med_move = na(raw_med) ? nz(absd, MINTICK) : raw_med
+roll_med = na(raw_med) ? nz(absd, MINTICK) : raw_med
+med_move = FREEZE_LAM ? LAM_ANCHOR : roll_med
 lam_slow = med_move * SLOW_N
 lam_fast = med_move * FAST_N
 

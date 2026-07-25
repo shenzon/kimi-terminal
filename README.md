@@ -21,9 +21,11 @@ Not financial advice.
 **XAGUSD 4H**: SLOW lens (N=12) drives the bias / trend label / exit, FAST lens
 (N=4) drives entry timing, with a volume-confirmation gate and the asymmetric
 long-only ENTER/HOLD/EXIT rule. Paste into the TradingView Pine Editor on a 4H
-XAGUSD chart. Core math matches `swing4h.py`; λ is a rolling 100-bar median
-(vs the Python's single fixed λ), so historical signals won't reproduce it
-tick-for-tick.
+XAGUSD chart. Core math matches `swing4h.py` (validated to 1e-9), including the
+**frozen λ anchor** (default = `LAM_ANCHOR["xagusd"]`) so the read is stable
+day-over-day; toggle *Freeze lambda anchor* off for the old rolling median.
+Signals still won't reproduce the Python tick-for-tick because TradingView's
+XAGUSD (spot) differs from Yahoo `SI=F` (futures).
 
 ## Local build
 ```
